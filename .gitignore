@@ -1,0 +1,11 @@
+# Binaries
+mcp-oauth-proxy
+*.exe
+*.exe.test
+*.test
+*.out
+
+# OS & IDE
+.DS_Store
+.vscode/
+.idea/
