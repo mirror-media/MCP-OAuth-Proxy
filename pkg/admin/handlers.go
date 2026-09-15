@@ -132,7 +132,13 @@ func (a *AdminServer) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !a.IsAuthenticated(r) {
 			if strings.HasPrefix(r.URL.Path, "/api/v1/") || strings.HasPrefix(r.URL.Path, "/mcp") || strings.HasPrefix(r.URL.Path, "/daily") || strings.HasPrefix(r.URL.Path, "/messages") {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="sso.mirrormedia.mg"`)
+				w.Header().Set(
+					"WWW-Authenticate",
+					fmt.Sprintf(
+						`Bearer realm="sso.mirrormedia.mg", resource_metadata="%s"`,
+						a.MCPResourceMetadataURL(r.URL.Path),
+					),
+				)
 				http.Error(w, "Unauthorized: Login or Bearer token required", http.StatusUnauthorized)
 				return
 			}

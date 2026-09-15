@@ -48,15 +48,11 @@ func main() {
 	// OIDC & OAuth2 Endpoints
 	mux.HandleFunc("/.well-known/openid-configuration", oidcServer.HandleDiscovery)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", oidcServer.HandleDiscovery)
-	
+
 	handleProtectedResource := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		resourceURL := fmt.Sprintf("%s/mcp/sse", cfg.Issuer)
-		if strings.Contains(r.URL.Path, "daily") {
-			resourceURL = fmt.Sprintf("%s/daily/sse", cfg.Issuer)
-		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"resource":              resourceURL,
+			"resource":              adminServer.MCPResourceURL(r.URL.Path),
 			"authorization_servers": []string{cfg.Issuer},
 		})
 	}
@@ -102,12 +98,7 @@ func main() {
 			r.Header.Set("X-User-Email", sessionUser.Email)
 			r.Header.Set("X-User-Name", sessionUser.FullName)
 		}
-		if strings.HasPrefix(r.URL.Path, "/mcp") {
-			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/mcp")
-			if r.URL.Path == "" {
-				r.URL.Path = "/"
-			}
-		}
+		r.URL.Path = rewriteGAMCPPath(r.URL.Path)
 		r.Host = gaMCPTarget.Host
 		mcpProxy.ServeHTTP(w, r)
 	})
@@ -155,5 +146,18 @@ func main() {
 	log.Printf("Server is ready and listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("Server shutdown with error: %v", err)
+	}
+}
+
+func rewriteGAMCPPath(path string) string {
+	switch {
+	case path == "/mcp/sse":
+		return "/sse"
+	case strings.HasPrefix(path, "/mcp/sse/"):
+		return "/sse/" + strings.TrimPrefix(path, "/mcp/sse/")
+	default:
+		// Streamable HTTP stays at /mcp. The legacy /messages endpoint is
+		// already rooted correctly for SseServerTransport.
+		return path
 	}
 }
