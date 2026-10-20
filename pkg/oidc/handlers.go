@@ -19,7 +19,6 @@ import (
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/db"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/models"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/web"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
@@ -142,32 +141,9 @@ func (s *Server) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := r.FormValue("username")
-	password := r.FormValue("password")
 	stateRaw := r.FormValue("state")
-
-	stateVals, err := url.ParseQuery(stateRaw)
-	if err != nil {
-		http.Error(w, "Invalid auth request state", http.StatusBadRequest)
-		return
-	}
-
-	user, err := s.store.GetUserByUsernameOrEmail(username)
-	if err != nil {
-		redirectErr := fmt.Sprintf("/oauth/v2/authorize?%s&error=%s", stateRaw, url.QueryEscape("User could not be found"))
-		http.Redirect(w, r, redirectErr, http.StatusFound)
-		return
-	}
-
-	// Check password
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		redirectErr := fmt.Sprintf("/oauth/v2/authorize?%s&error=%s", stateRaw, url.QueryEscape("Invalid password"))
-		http.Redirect(w, r, redirectErr, http.StatusFound)
-		return
-	}
-
-	s.adminServer.SetSessionCookie(w, user)
-	s.issueCodeAndRedirect(w, r, user, stateVals)
+	redirectErr := fmt.Sprintf("/oauth/v2/authorize?%s&error=%s", stateRaw, url.QueryEscape("Username and password login has been disabled. Please use Google Workspace SSO."))
+	http.Redirect(w, r, redirectErr, http.StatusFound)
 }
 
 func (s *Server) HandleGoogleLogin(w http.ResponseWriter, r *http.Request) {

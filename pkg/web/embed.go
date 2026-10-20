@@ -10,7 +10,7 @@ const LoginHTML = `<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OAuthProxy • Login</title>
+    <title>OAuthProxy • Single Sign-On</title>
     <style>
         :root {
             --bg-color: #0f172a;
@@ -25,22 +25,14 @@ const LoginHTML = `<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         body { background-color: var(--bg-color); color: var(--text-main); display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem; }
-        .login-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 2.5rem; width: 100%; max-width: 420px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
-        .logo { text-align: center; margin-bottom: 2rem; }
+        .login-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 2.5rem; width: 100%; max-width: 420px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); text-align: center; }
+        .logo { margin-bottom: 2rem; }
         .logo h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; color: #fff; }
-        .logo p { color: var(--text-muted); font-size: 0.875rem; margin-top: 0.25rem; }
-        .google-btn { display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; padding: 0.75rem; background: #ffffff; color: #000000; font-weight: 600; border-radius: 6px; text-decoration: none; font-size: 0.95rem; transition: background 0.2s; margin-bottom: 1.5rem; }
-        .google-btn:hover { background: #f1f5f9; }
-        .divider { display: flex; align-items: center; text-align: center; margin: 1.5rem 0; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
-        .divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid var(--border); }
-        .divider span { padding: 0 0.75rem; }
-        .form-group { margin-bottom: 1.25rem; }
-        .form-group label { display: block; font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 500; }
-        .form-group input { width: 100%; padding: 0.75rem; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: #fff; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
-        .form-group input:focus { border-color: var(--primary); }
-        .submit-btn { width: 100%; padding: 0.75rem; background: var(--primary); color: #fff; font-weight: 600; border: none; border-radius: 6px; font-size: 0.95rem; cursor: pointer; transition: background 0.2s; }
-        .submit-btn:hover { background: var(--primary-hover); }
-        .error-box { background: var(--error-bg); border: 1px solid #7f1d1d; color: var(--error-text); padding: 0.75rem; border-radius: 6px; font-size: 0.875rem; margin-bottom: 1.5rem; display: none; }
+        .logo p { color: var(--text-muted); font-size: 0.875rem; margin-top: 0.35rem; }
+        .info-desc { color: var(--text-muted); font-size: 0.9rem; line-height: 1.5; margin-bottom: 1.75rem; }
+        .google-btn { display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; padding: 0.85rem 1rem; background: #ffffff; color: #0f172a; font-weight: 600; border-radius: 8px; text-decoration: none; font-size: 0.95rem; transition: background 0.2s, transform 0.1s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+        .google-btn:hover { background: #f8fafc; transform: translateY(-1px); }
+        .error-box { background: var(--error-bg); border: 1px solid #7f1d1d; color: var(--error-text); padding: 0.75rem; border-radius: 6px; font-size: 0.875rem; margin-bottom: 1.5rem; display: none; text-align: left; }
         .footer { text-align: center; margin-top: 2rem; color: var(--text-muted); font-size: 0.75rem; }
     </style>
 </head>
@@ -48,36 +40,22 @@ const LoginHTML = `<!DOCTYPE html>
     <div class="login-card">
         <div class="logo">
             <h1>OAuthProxy</h1>
-            <p>MCP OAuth Proxy Identity Server</p>
+            <p>MCP Identity Gateway & Single Sign-On</p>
         </div>
 
         <div id="error-box" class="error-box"></div>
 
+        <p class="info-desc">
+            Sign in with your organization's Google Workspace account to authenticate with the MCP service.
+        </p>
+
         <a href="/auth/google/login?state={{.State}}" class="google-btn">
-            <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.27v3.15C3.25 21.3 7.31 24 12 24z"/><path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.27C.46 8.2 0 10.04 0 12s.46 3.8 1.27 5.42l4.01-3.15z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.25 2.7 1.27 6.58l4.01 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.27v3.15C3.25 21.3 7.31 24 12 24z"/><path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.27C.46 8.2 0 10.04 0 12s.46 3.8 1.27 5.42l4.01-3.15z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.25 2.7 1.27 6.58l4.01 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/></svg>
             Sign in with Google Workspace
         </a>
-        <div class="divider"><span>OR</span></div>
-
-        <form method="POST" action="/oauth/v2/login">
-            <input type="hidden" name="authRequestID" value="{{.AuthRequestID}}">
-            <input type="hidden" name="state" value="{{.State}}">
-
-            <div class="form-group">
-                <label for="username">Username or Email</label>
-                <input type="text" id="username" name="username" placeholder="admin or name@mirrormedia.mg" required autocomplete="username">
-            </div>
-
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input type="password" id="password" name="password" placeholder="••••••••" required autocomplete="current-password">
-            </div>
-
-            <button type="submit" class="submit-btn">Sign In</button>
-        </form>
 
         <div class="footer">
-            Powered by OAuthProxy • GCP Cloud Run
+            Secure Single Sign-On • Mirror Media Platform
         </div>
     </div>
 
