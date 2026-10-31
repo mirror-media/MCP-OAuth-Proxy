@@ -6,14 +6,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/config"
+	"github.com/mirror-media/mcp-oauth-proxy/pkg/crypto"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/db"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/models"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/web"
@@ -21,12 +23,29 @@ import (
 )
 
 type AdminServer struct {
-	cfg   *config.Config
-	store *db.Store
+	cfg        *config.Config
+	store      *db.Store
+	jwtManager *crypto.JWTManager
 }
 
-func NewAdminServer(cfg *config.Config, store *db.Store) *AdminServer {
-	return &AdminServer{cfg: cfg, store: store}
+func NewAdminServer(cfg *config.Config, store *db.Store, jwtManager *crypto.JWTManager) *AdminServer {
+	return &AdminServer{cfg: cfg, store: store, jwtManager: jwtManager}
+}
+
+// GetClientIP extracts the client IP address from proxy headers (X-Forwarded-For, X-Real-IP) or RemoteAddr.
+func GetClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (a *AdminServer) SetSessionCookie(w http.ResponseWriter, user *models.User) {
@@ -55,21 +74,30 @@ func (a *AdminServer) GetSessionUser(r *http.Request) *models.User {
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-		token, _, err := jwt.NewParser().ParseUnverified(tokenStr, jwt.MapClaims{})
-		if err == nil {
-			if claims, ok := token.Claims.(jwt.MapClaims); ok {
-				if userID, ok := claims["sub"].(string); ok && userID != "" {
-					if u, err := a.store.GetUserByID(userID); err == nil && u != nil {
-						return u
-					}
-				}
-				if email, ok := claims["email"].(string); ok && email != "" {
-					if u, err := a.store.GetUserByUsernameOrEmail(email); err == nil && u != nil {
-						return u
-					}
-				}
+		if a.jwtManager == nil {
+			log.Printf("[SECURITY] JWT Manager not initialized on AdminServer, denying Bearer token")
+			return nil
+		}
+
+		claims, err := a.jwtManager.VerifyToken(tokenStr)
+		if err != nil {
+			jti, fp := crypto.ExtractTokenMetadataForLog(tokenStr)
+			clientIP := GetClientIP(r)
+			log.Printf("[SECURITY_ALERT] Invalid Bearer token from IP=%s path=%s fingerprint=%s jti=%s error=%v", clientIP, r.URL.Path, fp, jti, err)
+			return nil
+		}
+
+		if userID, ok := claims["sub"].(string); ok && userID != "" {
+			if u, err := a.store.GetUserByID(userID); err == nil && u != nil {
+				return u
 			}
 		}
+		if email, ok := claims["email"].(string); ok && email != "" {
+			if u, err := a.store.GetUserByUsernameOrEmail(email); err == nil && u != nil {
+				return u
+			}
+		}
+		return nil
 	}
 
 	// Check Basic Auth
@@ -169,6 +197,28 @@ func (a *AdminServer) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			})
 			return
 		}
+
+		// Security hardening: Bearer tokens for external OAuth clients (like Claude)
+		// must NOT have access to administrative management APIs unless they have explicit admin scope
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			tokenStr := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			claims, err := a.jwtManager.VerifyToken(tokenStr)
+			if err != nil {
+				http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
+				return
+			}
+			scope, _ := claims["scope"].(string)
+			if !strings.Contains(scope, "admin") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error":   "forbidden",
+					"message": "Bearer token does not have 'admin' scope for management APIs",
+				})
+				return
+			}
+		}
+
 		next(w, r)
 	}
 }
@@ -205,6 +255,14 @@ func (a *AdminServer) HandleClients(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Mask client secrets when listing clients to prevent secret leakage
+		for i := range clients {
+			if len(clients[i].Secret) > 8 {
+				clients[i].Secret = clients[i].Secret[:4] + "..." + clients[i].Secret[len(clients[i].Secret)-4:]
+			} else {
+				clients[i].Secret = "********"
+			}
 		}
 		json.NewEncoder(w).Encode(clients)
 

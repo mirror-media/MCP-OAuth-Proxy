@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/admin"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/auth"
@@ -301,15 +300,12 @@ func (s *Server) HandleUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-	token, _, err := jwt.NewParser().ParseUnverified(tokenStr, jwt.MapClaims{})
+	claims, err := s.jwtManager.VerifyToken(tokenStr)
 	if err != nil {
-		http.Error(w, "Invalid token format", http.StatusUnauthorized)
-		return
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		http.Error(w, "Invalid claims", http.StatusUnauthorized)
+		clientIP := admin.GetClientIP(r)
+		jti, fp := crypto.ExtractTokenMetadataForLog(tokenStr)
+		log.Printf("[SECURITY_ALERT] Invalid token at userinfo from IP=%s fingerprint=%s jti=%s error=%v", clientIP, fp, jti, err)
+		http.Error(w, "Unauthorized: invalid or expired token", http.StatusUnauthorized)
 		return
 	}
 
