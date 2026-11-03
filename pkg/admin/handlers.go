@@ -32,20 +32,34 @@ func NewAdminServer(cfg *config.Config, store *db.Store, jwtManager *crypto.JWTM
 	return &AdminServer{cfg: cfg, store: store, jwtManager: jwtManager}
 }
 
-// GetClientIP extracts the client IP address from proxy headers (X-Forwarded-For, X-Real-IP) or RemoteAddr.
-func GetClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+// GetClientIP returns the client IP from the X-Forwarded-For entry that the
+// trusted infrastructure appended, counting trustedHops entries from the
+// right; entries to the left of it are set by the caller. With trustedHops 0,
+// or fewer entries than trustedHops, it uses the connection address. A value
+// that is not an IP address is returned as "invalid".
+func GetClientIP(r *http.Request, trustedHops int) string {
+	var entries []string
+	for _, line := range r.Header.Values("X-Forwarded-For") {
+		for _, entry := range strings.Split(line, ",") {
+			entries = append(entries, strings.TrimSpace(entry))
+		}
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+	candidate := r.RemoteAddr
+	if trustedHops > 0 && len(entries) >= trustedHops {
+		candidate = entries[len(entries)-trustedHops]
+	} else if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		candidate = host
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	ip := net.ParseIP(candidate)
+	if ip == nil {
+		return "invalid"
 	}
-	return r.RemoteAddr
+	return ip.String()
+}
+
+// ClientIP returns the client IP using the configured trusted hop count.
+func (a *AdminServer) ClientIP(r *http.Request) string {
+	return GetClientIP(r, a.cfg.TrustedProxyHops)
 }
 
 func (a *AdminServer) SetSessionCookie(w http.ResponseWriter, user *models.User) {
@@ -82,7 +96,7 @@ func (a *AdminServer) GetSessionUser(r *http.Request) *models.User {
 		claims, err := a.jwtManager.VerifyToken(tokenStr)
 		if err != nil {
 			jti, fp := crypto.ExtractTokenMetadataForLog(tokenStr)
-			clientIP := GetClientIP(r)
+			clientIP := a.ClientIP(r)
 			log.Printf("[SECURITY_ALERT] Invalid Bearer token from IP=%s path=%s fingerprint=%s jti=%s error=%v", clientIP, r.URL.Path, fp, jti, err)
 			return nil
 		}

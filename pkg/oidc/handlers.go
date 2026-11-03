@@ -351,7 +351,7 @@ func (s *Server) HandleUserInfo(w http.ResponseWriter, r *http.Request) {
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 	claims, err := s.jwtManager.VerifyToken(tokenStr)
 	if err != nil {
-		clientIP := admin.GetClientIP(r)
+		clientIP := admin.GetClientIP(r, s.cfg.TrustedProxyHops)
 		jti, fp := crypto.ExtractTokenMetadataForLog(tokenStr)
 		log.Printf("[SECURITY_ALERT] Invalid token at userinfo from IP=%s fingerprint=%s jti=%s error=%v", clientIP, fp, jti, err)
 		http.Error(w, "Unauthorized: invalid or expired token", http.StatusUnauthorized)
