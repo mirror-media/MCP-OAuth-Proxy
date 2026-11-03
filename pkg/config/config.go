@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,11 @@ type Config struct {
 	AllowedDomains     []string
 	AdminUsername      string
 	AdminPassword      string
+	// TrustedProxyHops is the number of X-Forwarded-For entries, counted from
+	// the right, that the infrastructure in front of the service appends. The
+	// client IP is the leftmost of those entries; entries before it are set by
+	// the caller. 0 ignores X-Forwarded-For and uses the connection address.
+	TrustedProxyHops int
 }
 
 func Load() *Config {
@@ -111,6 +117,15 @@ func Load() *Config {
 		adminPass = "ZitadelAdmin123!"
 	}
 
+	// Cloud Run (run.app URL or domain mapping) appends one entry. An external
+	// Application Load Balancer appends two: client IP, load balancer IP.
+	trustedProxyHops := 1
+	if v := os.Getenv("TRUSTED_PROXY_HOPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			trustedProxyHops = n
+		}
+	}
+
 	return &Config{
 		Port:               port,
 		ExternalDomain:     externalDomain,
@@ -126,5 +141,6 @@ func Load() *Config {
 		AllowedDomains:     allowedDomains,
 		AdminUsername:      adminUser,
 		AdminPassword:      adminPass,
+		TrustedProxyHops:   trustedProxyHops,
 	}
 }

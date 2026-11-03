@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -89,6 +91,52 @@ func TestLoggingMiddleware_LogsAbortedRequestAndRepanics(t *testing.T) {
 	}
 	entry := parseAccessLine(t, out)
 	if entry["aborted"] != true || entry["path"] != "/mcp/sse" {
+		t.Errorf("unexpected entry: %v", entry)
+	}
+}
+
+func TestForwardToMCP_SendsOnlyDerivedClientIP(t *testing.T) {
+	var gotXFF []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXFF = r.Header.Values("X-Forwarded-For")
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{AdminUsername: "admin", AdminPassword: "pw", TrustedProxyHops: 1}
+	adminServer := admin.NewAdminServer(cfg, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.SetBasicAuth("admin", "pw")
+	req.Header.Add("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
+
+	forwardToMCP(httptest.NewRecorder(), req, adminServer, httputil.NewSingleHostReverseProxy(target), target.Host)
+
+	want := []string{"203.0.113.9, 192.0.2.1"}
+	if strings.Join(gotXFF, "|") != strings.Join(want, "|") {
+		t.Errorf("upstream X-Forwarded-For = %q; want %q", gotXFF, want)
+	}
+}
+
+func TestLoggingMiddleware_LogsClientIPFromInboundHeader(t *testing.T) {
+	var buf bytes.Buffer
+	prev := accessLog.Writer()
+	accessLog.SetOutput(&buf)
+	t.Cleanup(func() { accessLog.SetOutput(prev) })
+
+	adminServer := admin.NewAdminServer(&config.Config{TrustedProxyHops: 1}, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Add("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
+	h := func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Forwarded-For", "192.0.2.99")
+	}
+	loggingMiddleware(http.HandlerFunc(h), adminServer).ServeHTTP(httptest.NewRecorder(), req)
+
+	entry := parseAccessLine(t, buf.String())
+	if entry["client_ip"] != "203.0.113.9" || entry["x_forwarded_for"] != "198.51.100.7, 203.0.113.9" {
 		t.Errorf("unexpected entry: %v", entry)
 	}
 }

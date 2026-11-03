@@ -99,14 +99,8 @@ func main() {
 	}
 	mcpProxy := httputil.NewSingleHostReverseProxy(gaMCPTarget)
 	mcpHandler := adminServer.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
-		sessionUser := adminServer.GetSessionUser(r)
-		if sessionUser != nil {
-			r.Header.Set("X-User-Email", sessionUser.Email)
-			r.Header.Set("X-User-Name", sessionUser.FullName)
-		}
 		r.URL.Path = rewriteGAMCPPath(r.URL.Path)
-		r.Host = gaMCPTarget.Host
-		mcpProxy.ServeHTTP(w, r)
+		forwardToMCP(w, r, adminServer, mcpProxy, gaMCPTarget.Host)
 	})
 
 	mux.HandleFunc("/mcp/", mcpHandler)
@@ -121,19 +115,13 @@ func main() {
 	}
 	dailyProxy := httputil.NewSingleHostReverseProxy(dailyMCPTarget)
 	dailyHandler := adminServer.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
-		sessionUser := adminServer.GetSessionUser(r)
-		if sessionUser != nil {
-			r.Header.Set("X-User-Email", sessionUser.Email)
-			r.Header.Set("X-User-Name", sessionUser.FullName)
-		}
 		if strings.HasPrefix(r.URL.Path, "/daily") {
 			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/daily")
 			if r.URL.Path == "" {
 				r.URL.Path = "/"
 			}
 		}
-		r.Host = dailyMCPTarget.Host
-		dailyProxy.ServeHTTP(w, r)
+		forwardToMCP(w, r, adminServer, dailyProxy, dailyMCPTarget.Host)
 	})
 
 	mux.HandleFunc("/daily/", dailyHandler)
@@ -156,6 +144,25 @@ func main() {
 		log.Fatalf("Server shutdown with error: %v", err)
 	}
 }
+
+// forwardToMCP sets the headers ga-mcp records in its audit log and proxies r
+// to the upstream. X-Forwarded-For is replaced with the client IP derived from
+// the trusted hops, so caller-set entries do not reach the upstream;
+// ReverseProxy then appends the address of the connection to this service.
+func forwardToMCP(w http.ResponseWriter, r *http.Request, adminServer *admin.AdminServer, proxy *httputil.ReverseProxy, host string) {
+	sessionUser := adminServer.GetSessionUser(r)
+	if sessionUser != nil {
+		r.Header.Set("X-User-Email", sessionUser.Email)
+		r.Header.Set("X-User-Name", sessionUser.FullName)
+	}
+	r.Header.Set("X-Forwarded-For", adminServer.ClientIP(r))
+	r.Host = host
+	proxy.ServeHTTP(w, r)
+}
+
+// maxLoggedForwardedFor bounds the caller-supplied X-Forwarded-For copied into
+// the access log.
+const maxLoggedForwardedFor = 512
 
 type responseWriterRecorder struct {
 	http.ResponseWriter
@@ -187,6 +194,12 @@ func loggingMiddleware(next http.Handler, adminServer *admin.AdminServer) http.H
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &responseWriterRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		// Read before the handler runs: forwardToMCP replaces X-Forwarded-For.
+		clientIP := adminServer.ClientIP(r)
+		forwardedFor := strings.Join(r.Header.Values("X-Forwarded-For"), ", ")
+		if len(forwardedFor) > maxLoggedForwardedFor {
+			forwardedFor = forwardedFor[:maxLoggedForwardedFor]
+		}
 
 		// Deferred so the line is also written when the handler panics, e.g.
 		// http.ErrAbortHandler from ReverseProxy after a client disconnect.
@@ -194,7 +207,6 @@ func loggingMiddleware(next http.Handler, adminServer *admin.AdminServer) http.H
 			p := recover()
 			duration := time.Since(start)
 
-			clientIP := admin.GetClientIP(r)
 			userEmail := "-"
 			jti := "-"
 			tokenFp := "-"
@@ -226,6 +238,7 @@ func loggingMiddleware(next http.Handler, adminServer *admin.AdminServer) http.H
 				"event":             "http_access",
 				"timestamp":         start.UTC().Format(time.RFC3339Nano),
 				"client_ip":         clientIP,
+				"x_forwarded_for":   forwardedFor,
 				"method":            r.Method,
 				"path":              r.URL.Path,
 				"query":             r.URL.RawQuery,
