@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/db"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/oidc"
 )
+
+// accessLog writes one JSON object per line, with no prefix, so log
+// collectors can parse it as structured data.
+var accessLog = log.New(os.Stderr, "", 0)
 
 func main() {
 	cfg := config.Load()
@@ -183,56 +188,69 @@ func loggingMiddleware(next http.Handler, adminServer *admin.AdminServer) http.H
 		start := time.Now()
 		rec := &responseWriterRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 
+		// Deferred so the line is also written when the handler panics, e.g.
+		// http.ErrAbortHandler from ReverseProxy after a client disconnect.
+		defer func() {
+			p := recover()
+			duration := time.Since(start)
+
+			clientIP := admin.GetClientIP(r)
+			userEmail := "-"
+			jti := "-"
+			tokenFp := "-"
+
+			if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+				tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+				j, fp := crypto.ExtractTokenMetadataForLog(tokenStr)
+				if j != "" {
+					jti = j
+				}
+				if fp != "" {
+					tokenFp = fp
+				}
+			}
+
+			if user := adminServer.GetSessionUser(r); user != nil {
+				userEmail = user.Email
+			}
+
+			severity := "INFO"
+			if rec.statusCode >= 400 && rec.statusCode < 500 {
+				severity = "WARNING"
+			} else if rec.statusCode >= 500 {
+				severity = "ERROR"
+			}
+
+			logEntry := map[string]interface{}{
+				"severity":          severity,
+				"event":             "http_access",
+				"timestamp":         start.UTC().Format(time.RFC3339Nano),
+				"client_ip":         clientIP,
+				"method":            r.Method,
+				"path":              r.URL.Path,
+				"query":             r.URL.RawQuery,
+				"status":            rec.statusCode,
+				"bytes":             rec.bytesWritten,
+				"duration_ms":       duration.Milliseconds(),
+				"user_email":        userEmail,
+				"token_jti":         jti,
+				"token_fingerprint": tokenFp,
+				"user_agent":        r.UserAgent(),
+			}
+
+			if p != nil {
+				logEntry["aborted"] = true
+			}
+
+			logBytes, _ := json.Marshal(logEntry)
+			accessLog.Println(string(logBytes))
+
+			if p != nil {
+				panic(p)
+			}
+		}()
+
 		next.ServeHTTP(rec, r)
-
-		duration := time.Since(start)
-
-		clientIP := admin.GetClientIP(r)
-		userEmail := "-"
-		jti := "-"
-		tokenFp := "-"
-
-		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-			j, fp := crypto.ExtractTokenMetadataForLog(tokenStr)
-			if j != "" {
-				jti = j
-			}
-			if fp != "" {
-				tokenFp = fp
-			}
-		}
-
-		if user := adminServer.GetSessionUser(r); user != nil {
-			userEmail = user.Email
-		}
-
-		severity := "INFO"
-		if rec.statusCode >= 400 && rec.statusCode < 500 {
-			severity = "WARNING"
-		} else if rec.statusCode >= 500 {
-			severity = "ERROR"
-		}
-
-		logEntry := map[string]interface{}{
-			"severity":          severity,
-			"event":             "http_access",
-			"timestamp":         start.UTC().Format(time.RFC3339Nano),
-			"client_ip":         clientIP,
-			"method":            r.Method,
-			"path":              r.URL.Path,
-			"query":             r.URL.RawQuery,
-			"status":            rec.statusCode,
-			"bytes":             rec.bytesWritten,
-			"duration_ms":       duration.Milliseconds(),
-			"user_email":        userEmail,
-			"token_jti":         jti,
-			"token_fingerprint": tokenFp,
-			"user_agent":        r.UserAgent(),
-		}
-
-		logBytes, _ := json.Marshal(logEntry)
-		log.Println(string(logBytes))
 	})
 }
 
