@@ -228,6 +228,11 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if grantType == "refresh_token" {
+		s.handleRefreshTokenGrant(w, r.FormValue("refresh_token"), clientID)
+		return
+	}
+
 	ac, err := s.store.GetAndConsumeAuthCode(code)
 	if err != nil || ac.ExpiresAt.Before(time.Now()) {
 		w.Header().Set("Content-Type", "application/json")
@@ -261,7 +266,33 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, idToken, expiresIn, err := s.jwtManager.GenerateTokens(s.cfg.Issuer, user, clientID, ac.Scope, ac.Nonce)
+	s.writeTokenResponse(w, user, clientID, ac.Scope, ac.Nonce)
+}
+
+// handleRefreshTokenGrant exchanges a refresh token issued to clientID for a new
+// access token and a new refresh token. The presented refresh token is consumed.
+func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, refreshToken, clientID string) {
+	rt, err := s.store.GetAndConsumeRefreshToken(refreshToken)
+	if err != nil || rt.ExpiresAt.Before(time.Now()) || rt.ClientID != clientID {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant", "error_description": "Refresh token expired or invalid"})
+		return
+	}
+
+	user, err := s.store.GetUserByID(rt.UserID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant", "error_description": "User not found"})
+		return
+	}
+
+	s.writeTokenResponse(w, user, rt.ClientID, rt.Scope, "")
+}
+
+func (s *Server) writeTokenResponse(w http.ResponseWriter, user *models.User, clientID, scope, nonce string) {
+	accessToken, idToken, expiresIn, err := s.jwtManager.GenerateTokens(s.cfg.Issuer, user, clientID, scope, nonce)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -274,7 +305,7 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 		Token:     refreshToken,
 		ClientID:  clientID,
 		UserID:    user.ID,
-		Scope:     ac.Scope,
+		Scope:     scope,
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
 	})
 
@@ -288,7 +319,7 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 		"expires_in":    expiresIn,
 		"id_token":      idToken,
 		"refresh_token": refreshToken,
-		"scope":         ac.Scope,
+		"scope":         scope,
 	})
 }
 
