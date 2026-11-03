@@ -318,6 +318,19 @@ func (s *Store) SaveRefreshToken(rt *models.RefreshToken) error {
 	return err
 }
 
+// GetAndConsumeRefreshToken returns the refresh token and deletes it in the same
+// statement, so a token can be exchanged only once.
+func (s *Store) GetAndConsumeRefreshToken(token string) (*models.RefreshToken, error) {
+	rt := &models.RefreshToken{}
+	err := s.db.QueryRow(`DELETE FROM refresh_tokens WHERE token = $1
+		RETURNING token, client_id, user_id, COALESCE(scope, ''), expires_at;`, token).
+		Scan(&rt.Token, &rt.ClientID, &rt.UserID, &rt.Scope, &rt.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return rt, nil
+}
+
 func (s *Store) GetRSAKey() (*models.RSAKey, error) {
 	k := &models.RSAKey{}
 	err := s.db.QueryRow(`SELECT id, private_key, public_key, created_at FROM rsa_keys ORDER BY created_at DESC LIMIT 1;`).

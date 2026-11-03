@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/admin"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/config"
@@ -15,6 +17,10 @@ import (
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/db"
 	"github.com/mirror-media/mcp-oauth-proxy/pkg/oidc"
 )
+
+// accessLog writes one JSON object per line, with no prefix, so log
+// collectors can parse it as structured data.
+var accessLog = log.New(os.Stderr, "", 0)
 
 func main() {
 	cfg := config.Load()
@@ -30,7 +36,7 @@ func main() {
 		log.Fatalf("JWT Manager initialization failed: %v", err)
 	}
 
-	adminServer := admin.NewAdminServer(cfg, store)
+	adminServer := admin.NewAdminServer(cfg, store, jwtManager)
 	oidcServer := oidc.NewServer(cfg, store, jwtManager, adminServer)
 
 	mux := http.NewServeMux()
@@ -142,11 +148,110 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+	loggedMux := loggingMiddleware(mux, adminServer)
+
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	log.Printf("Server is ready and listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := http.ListenAndServe(addr, loggedMux); err != nil {
 		log.Fatalf("Server shutdown with error: %v", err)
 	}
+}
+
+type responseWriterRecorder struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int
+}
+
+func (r *responseWriterRecorder) WriteHeader(statusCode int) {
+	r.statusCode = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *responseWriterRecorder) Write(b []byte) (int, error) {
+	if r.statusCode == 0 {
+		r.statusCode = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.bytesWritten += n
+	return n, err
+}
+
+func (r *responseWriterRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func loggingMiddleware(next http.Handler, adminServer *admin.AdminServer) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &responseWriterRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+
+		// Deferred so the line is also written when the handler panics, e.g.
+		// http.ErrAbortHandler from ReverseProxy after a client disconnect.
+		defer func() {
+			p := recover()
+			duration := time.Since(start)
+
+			clientIP := admin.GetClientIP(r)
+			userEmail := "-"
+			jti := "-"
+			tokenFp := "-"
+
+			if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+				tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+				j, fp := crypto.ExtractTokenMetadataForLog(tokenStr)
+				if j != "" {
+					jti = j
+				}
+				if fp != "" {
+					tokenFp = fp
+				}
+			}
+
+			if user := adminServer.GetSessionUser(r); user != nil {
+				userEmail = user.Email
+			}
+
+			severity := "INFO"
+			if rec.statusCode >= 400 && rec.statusCode < 500 {
+				severity = "WARNING"
+			} else if rec.statusCode >= 500 {
+				severity = "ERROR"
+			}
+
+			logEntry := map[string]interface{}{
+				"severity":          severity,
+				"event":             "http_access",
+				"timestamp":         start.UTC().Format(time.RFC3339Nano),
+				"client_ip":         clientIP,
+				"method":            r.Method,
+				"path":              r.URL.Path,
+				"query":             r.URL.RawQuery,
+				"status":            rec.statusCode,
+				"bytes":             rec.bytesWritten,
+				"duration_ms":       duration.Milliseconds(),
+				"user_email":        userEmail,
+				"token_jti":         jti,
+				"token_fingerprint": tokenFp,
+				"user_agent":        r.UserAgent(),
+			}
+
+			if p != nil {
+				logEntry["aborted"] = true
+			}
+
+			logBytes, _ := json.Marshal(logEntry)
+			accessLog.Println(string(logBytes))
+
+			if p != nil {
+				panic(p)
+			}
+		}()
+
+		next.ServeHTTP(rec, r)
+	})
 }
 
 func rewriteGAMCPPath(path string) string {
