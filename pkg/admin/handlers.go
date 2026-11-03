@@ -208,7 +208,14 @@ func (a *AdminServer) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			scope, _ := claims["scope"].(string)
-			if !strings.Contains(scope, "admin") {
+			hasAdminScope := false
+			for _, sc := range strings.Fields(scope) {
+				if sc == "admin" {
+					hasAdminScope = true
+					break
+				}
+			}
+			if !hasAdminScope {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				json.NewEncoder(w).Encode(map[string]string{

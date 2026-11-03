@@ -291,7 +291,25 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, refreshToken, cl
 	s.writeTokenResponse(w, user, rt.ClientID, rt.Scope, "")
 }
 
+// supportedScopes are the scopes this server grants; any other requested
+// scope is dropped. Management APIs are authorized by the console session,
+// so no OAuth client is granted an "admin" scope.
+var supportedScopes = map[string]bool{"openid": true, "profile": true, "email": true, "offline_access": true}
+
+func grantedScope(requested string) string {
+	var granted []string
+	seen := map[string]bool{}
+	for _, sc := range strings.Fields(requested) {
+		if supportedScopes[sc] && !seen[sc] {
+			seen[sc] = true
+			granted = append(granted, sc)
+		}
+	}
+	return strings.Join(granted, " ")
+}
+
 func (s *Server) writeTokenResponse(w http.ResponseWriter, user *models.User, clientID, scope, nonce string) {
+	scope = grantedScope(scope)
 	accessToken, idToken, expiresIn, err := s.jwtManager.GenerateTokens(s.cfg.Issuer, user, clientID, scope, nonce)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
